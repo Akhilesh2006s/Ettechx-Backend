@@ -141,10 +141,9 @@ const NewsletterSchema = new mongoose.Schema({
   },
 });
 
-// Update the updatedAt field before saving
-NewsletterSchema.pre('save', function(next) {
+// Update timestamp before saving (promise-style hook; avoids callback/next mismatch)
+NewsletterSchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
 const Newsletter = mongoose.model('Newsletter', NewsletterSchema);
