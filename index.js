@@ -131,7 +131,7 @@ const speakerStorage = multer.diskStorage({
 });
 
 const imageFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp|JPG|JPEG|PNG/;
+  const allowedTypes = /jpeg|jpg|png|gif|webp|bmp|avif|heic|heif|JPG|JPEG|PNG|GIF|WEBP|BMP|AVIF|HEIC|HEIF/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
   
@@ -294,52 +294,26 @@ app.post('/api/gallery/upload', galleryUpload.single('image'), async (req, res) 
     const { year, category } = req.body;
     const folder = `gallery/${year || 'uploads'}/${category || ''}`;
     
-    // Upload to Cloudinary if configured, otherwise use local storage
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      try {
-        const result = await uploadToCloudinary(req.file, folder);
-        res.json({
-          success: true,
-          url: result.secure_url,
-          publicId: result.public_id,
-          filename: result.original_filename,
-          originalName: req.file.originalname,
-          size: result.bytes
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        // Fallback to local storage if Cloudinary fails
-        const uploadPath = path.join(__dirname, '../public', folder);
-        await fs.mkdir(uploadPath, { recursive: true });
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(req.file.originalname);
-        const filename = `${uniqueSuffix}${ext}`;
-        const filePath = path.join(uploadPath, filename);
-        await fs.writeFile(filePath, req.file.buffer);
-        res.json({
-          success: true,
-          url: `/${folder}/${filename}`,
-          filename: filename,
-          originalName: req.file.originalname,
-          size: req.file.size
-        });
-      }
-    } else {
-      // Local storage fallback
-      const uploadPath = path.join(__dirname, '../public', folder);
-      await fs.mkdir(uploadPath, { recursive: true });
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(req.file.originalname);
-      const filename = `${uniqueSuffix}${ext}`;
-      const filePath = path.join(uploadPath, filename);
-      await fs.writeFile(filePath, req.file.buffer);
+    // Gallery uploads must be stored in Cloudinary.
+    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+      return res.status(500).json({
+        error: 'Cloudinary is not configured on server. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.'
+      });
+    }
+
+    try {
+      const result = await uploadToCloudinary(req.file, folder);
       res.json({
         success: true,
-        url: `/${folder}/${filename}`,
-        filename: filename,
+        url: result.secure_url,
+        publicId: result.public_id,
+        filename: result.original_filename,
         originalName: req.file.originalname,
-        size: req.file.size
+        size: result.bytes
       });
+    } catch (cloudinaryError) {
+      console.error('Cloudinary upload error:', cloudinaryError);
+      res.status(502).json({ error: 'Cloudinary upload failed. Image was not saved.' });
     }
   } catch (error) {
     console.error('Error uploading file:', error);
@@ -778,7 +752,13 @@ app.post('/api/newsletters', async (req, res) => {
     res.status(201).json({ success: true, newsletter });
   } catch (error) {
     console.error('Error creating newsletter:', error);
-    res.status(500).json({ error: 'Failed to create newsletter' });
+    if (error && error.name === 'ValidationError') {
+      const details = Object.values(error.errors || {})
+        .map((e) => e.message)
+        .join(', ');
+      return res.status(400).json({ error: `Validation failed: ${details}` });
+    }
+    res.status(500).json({ error: error?.message || 'Failed to create newsletter' });
   }
 });
 
@@ -796,7 +776,13 @@ app.put('/api/newsletters/:id', async (req, res) => {
     res.json({ success: true, newsletter });
   } catch (error) {
     console.error('Error updating newsletter:', error);
-    res.status(500).json({ error: 'Failed to update newsletter' });
+    if (error && error.name === 'ValidationError') {
+      const details = Object.values(error.errors || {})
+        .map((e) => e.message)
+        .join(', ');
+      return res.status(400).json({ error: `Validation failed: ${details}` });
+    }
+    res.status(500).json({ error: error?.message || 'Failed to update newsletter' });
   }
 });
 
