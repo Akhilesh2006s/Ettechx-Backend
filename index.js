@@ -293,28 +293,41 @@ app.post('/api/gallery/upload', galleryUpload.single('image'), async (req, res) 
     
     const { year, category } = req.body;
     const folder = `gallery/${year || 'uploads'}/${category || ''}`;
-    
-    // Gallery uploads must be stored in Cloudinary.
-    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-      return res.status(500).json({
-        error: 'Cloudinary is not configured on server. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.'
-      });
+
+    // Upload to Cloudinary if configured; otherwise fallback to local storage.
+    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+      try {
+        const result = await uploadToCloudinary(req.file, folder);
+        return res.json({
+          success: true,
+          url: result.secure_url,
+          publicId: result.public_id,
+          filename: result.original_filename,
+          originalName: req.file.originalname,
+          size: result.bytes
+        });
+      } catch (cloudinaryError) {
+        console.error('Cloudinary upload error for gallery, falling back to local storage:', cloudinaryError);
+      }
     }
 
-    try {
-      const result = await uploadToCloudinary(req.file, folder);
-      res.json({
-        success: true,
-        url: result.secure_url,
-        publicId: result.public_id,
-        filename: result.original_filename,
-        originalName: req.file.originalname,
-        size: result.bytes
-      });
-    } catch (cloudinaryError) {
-      console.error('Cloudinary upload error:', cloudinaryError);
-      res.status(502).json({ error: 'Cloudinary upload failed. Image was not saved.' });
-    }
+    const uploadPath = path.join(__dirname, '../public', folder);
+    await fs.mkdir(uploadPath, { recursive: true });
+    const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(originalName);
+    const nameWithoutExt = path.basename(originalName, ext);
+    const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
+    const filePath = path.join(uploadPath, filename);
+    await fs.writeFile(filePath, req.file.buffer);
+
+    return res.json({
+      success: true,
+      url: `/${folder}/${filename}`,
+      filename: filename,
+      originalName: req.file.originalname,
+      size: req.file.size
+    });
   } catch (error) {
     console.error('Error uploading file:', error);
     res.status(500).json({ error: 'Failed to upload file' });
