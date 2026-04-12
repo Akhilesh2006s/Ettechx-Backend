@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -82,6 +83,82 @@ const deleteFromCloudinary = async (imageUrl) => {
     throw error;
   }
 };
+
+const isProduction = process.env.NODE_ENV === 'production';
+
+function isCloudinaryConfigured() {
+  return !!(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+    process.env.CLOUDINARY_API_KEY &&
+    process.env.CLOUDINARY_API_SECRET
+  );
+}
+
+async function saveLocalUpload(file, folder) {
+  const uploadPath = path.join(__dirname, '../public', folder);
+  await fs.mkdir(uploadPath, { recursive: true });
+  const originalName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+  const ext = path.extname(originalName);
+  const nameWithoutExt = path.basename(originalName, ext);
+  const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
+  const filePath = path.join(uploadPath, filename);
+  await fs.writeFile(filePath, file.buffer);
+  const url = `/${folder}/${filename}`.replace(/\/+/g, '/');
+  return {
+    success: true,
+    url,
+    filename,
+    originalName: file.originalname,
+    size: file.size,
+    storage: 'local',
+  };
+}
+
+/**
+ * Prefer Cloudinary in production so uploads persist and appear in the Cloudinary dashboard.
+ * Railway: set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.
+ * Optional: ALLOW_LOCAL_MEDIA_FALLBACK=true if Cloudinary errors and you accept disk storage.
+ */
+async function uploadWithCloudinaryPolicy(file, folder) {
+  if (!isCloudinaryConfigured()) {
+    if (isProduction) {
+      const err = new Error(
+        'Cloudinary is not configured. Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET to your server environment (e.g. Railway Variables).'
+      );
+      err.statusCode = 503;
+      throw err;
+    }
+    return saveLocalUpload(file, folder);
+  }
+  try {
+    const result = await uploadToCloudinary(file, folder);
+    return {
+      success: true,
+      url: result.secure_url,
+      publicId: result.public_id,
+      filename: result.original_filename,
+      originalName: file.originalname,
+      size: result.bytes,
+      storage: 'cloudinary',
+    };
+  } catch (cloudinaryError) {
+    console.error('Cloudinary upload error:', cloudinaryError);
+    if (isProduction && process.env.ALLOW_LOCAL_MEDIA_FALLBACK !== 'true') {
+      const err = new Error(
+        `Cloudinary upload failed: ${cloudinaryError.message || cloudinaryError}. Check API keys and dashboard, or set ALLOW_LOCAL_MEDIA_FALLBACK=true to fall back to disk.`
+      );
+      err.statusCode = 502;
+      err.details = cloudinaryError.message;
+      throw err;
+    }
+    const local = await saveLocalUpload(file, folder);
+    return {
+      ...local,
+      warning: `Cloudinary failed (${cloudinaryError.message || 'unknown'}); saved locally.`,
+    };
+  }
+}
 
 // Middleware
 app.use(cors());
@@ -290,45 +367,18 @@ app.post('/api/gallery/upload', galleryUpload.single('image'), async (req, res) 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    
+
     const { year, category } = req.body;
     const folder = `gallery/${year || 'uploads'}/${category || ''}`;
-
-    // Upload to Cloudinary if configured; otherwise fallback to local storage.
-    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
-      try {
-        const result = await uploadToCloudinary(req.file, folder);
-        return res.json({
-          success: true,
-          url: result.secure_url,
-          publicId: result.public_id,
-          filename: result.original_filename,
-          originalName: req.file.originalname,
-          size: result.bytes
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error for gallery, falling back to local storage:', cloudinaryError);
-      }
-    }
-
-    const uploadPath = path.join(__dirname, '../public', folder);
-    await fs.mkdir(uploadPath, { recursive: true });
-    const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(originalName);
-    const nameWithoutExt = path.basename(originalName, ext);
-    const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-    const filePath = path.join(uploadPath, filename);
-    await fs.writeFile(filePath, req.file.buffer);
-
-    return res.json({
-      success: true,
-      url: `/${folder}/${filename}`,
-      filename: filename,
-      originalName: req.file.originalname,
-      size: req.file.size
-    });
+    const payload = await uploadWithCloudinaryPolicy(req.file, folder);
+    return res.json(payload);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        details: error.details,
+      });
+    }
     console.error('Error uploading file:', error);
     res.status(500).json({ error: 'Failed to upload file' });
   }
@@ -445,61 +495,17 @@ app.post('/api/speakers/upload', speakerUpload.single('image'), async (req, res)
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    
+
     const folder = 'speakers';
-    
-    // Upload to Cloudinary if configured, otherwise use local storage
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      try {
-        const result = await uploadToCloudinary(req.file, folder);
-        res.json({
-          success: true,
-          url: result.secure_url,
-          publicId: result.public_id,
-          filename: result.original_filename,
-          originalName: req.file.originalname,
-          size: result.bytes
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        // Fallback to local storage if Cloudinary fails
-        const uploadPath = path.join(__dirname, '../public', folder);
-        await fs.mkdir(uploadPath, { recursive: true });
-        const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(originalName);
-        const nameWithoutExt = path.basename(originalName, ext);
-        const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-        const filePath = path.join(uploadPath, filename);
-        await fs.writeFile(filePath, req.file.buffer);
-        res.json({
-          success: true,
-          url: `/${folder}/${filename}`,
-          filename: filename,
-          originalName: req.file.originalname,
-          size: req.file.size
-        });
-      }
-    } else {
-      // Local storage fallback
-      const uploadPath = path.join(__dirname, '../public', folder);
-      await fs.mkdir(uploadPath, { recursive: true });
-      const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(originalName);
-      const nameWithoutExt = path.basename(originalName, ext);
-      const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-      const filePath = path.join(uploadPath, filename);
-      await fs.writeFile(filePath, req.file.buffer);
-      res.json({
-        success: true,
-        url: `/${folder}/${filename}`,
-        filename: filename,
-        originalName: req.file.originalname,
-        size: req.file.size
+    const payload = await uploadWithCloudinaryPolicy(req.file, folder);
+    return res.json(payload);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        details: error.details,
       });
     }
-  } catch (error) {
     console.error('Error uploading speaker image:', error);
     res.status(500).json({ error: 'Failed to upload file' });
   }
@@ -616,61 +622,17 @@ app.post('/api/sponsors/upload', speakerUpload.single('image'), async (req, res)
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    
+
     const folder = 'sponsors';
-    
-    // Upload to Cloudinary if configured, otherwise use local storage
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      try {
-        const result = await uploadToCloudinary(req.file, folder);
-        res.json({
-          success: true,
-          url: result.secure_url,
-          publicId: result.public_id,
-          filename: result.original_filename,
-          originalName: req.file.originalname,
-          size: result.bytes
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        // Fallback to local storage if Cloudinary fails
-        const uploadPath = path.join(__dirname, '../public', folder);
-        await fs.mkdir(uploadPath, { recursive: true });
-        const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(originalName);
-        const nameWithoutExt = path.basename(originalName, ext);
-        const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-        const filePath = path.join(uploadPath, filename);
-        await fs.writeFile(filePath, req.file.buffer);
-        res.json({
-          success: true,
-          url: `/${folder}/${filename}`,
-          filename: filename,
-          originalName: req.file.originalname,
-          size: req.file.size
-        });
-      }
-    } else {
-      // Local storage fallback
-      const uploadPath = path.join(__dirname, '../public', folder);
-      await fs.mkdir(uploadPath, { recursive: true });
-      const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(originalName);
-      const nameWithoutExt = path.basename(originalName, ext);
-      const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-      const filePath = path.join(uploadPath, filename);
-      await fs.writeFile(filePath, req.file.buffer);
-      res.json({
-        success: true,
-        url: `/${folder}/${filename}`,
-        filename: filename,
-        originalName: req.file.originalname,
-        size: req.file.size
+    const payload = await uploadWithCloudinaryPolicy(req.file, folder);
+    return res.json(payload);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        details: error.details,
       });
     }
-  } catch (error) {
     console.error('Error uploading sponsor logo:', error);
     res.status(500).json({ error: 'Failed to upload file' });
   }
@@ -838,74 +800,44 @@ app.post('/api/newsletters/upload/banner', speakerUpload.single('image'), async 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    
+
     const folder = 'newsletters/banners';
-    
-    // Upload to Cloudinary if configured, otherwise use local storage
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      try {
-        const result = await uploadToCloudinary(req.file, folder);
-        res.json({
-          success: true,
-          url: result.secure_url,
-          publicId: result.public_id,
-          filename: result.original_filename,
-          originalName: req.file.originalname,
-          size: result.bytes
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        // Fallback to local storage if Cloudinary fails
-        const uploadPath = path.join(__dirname, '../public', folder);
-        await fs.mkdir(uploadPath, { recursive: true });
-        const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(originalName);
-        const nameWithoutExt = path.basename(originalName, ext);
-        const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-        const filePath = path.join(uploadPath, filename);
-        await fs.writeFile(filePath, req.file.buffer);
-        res.json({
-          success: true,
-          url: `/${folder}/${filename}`,
-          filename: filename,
-          originalName: req.file.originalname,
-          size: req.file.size
-        });
-      }
-    } else {
-      // Local storage fallback
-      const uploadPath = path.join(__dirname, '../public', folder);
-      await fs.mkdir(uploadPath, { recursive: true });
-      const originalName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(originalName);
-      const nameWithoutExt = path.basename(originalName, ext);
-      const filename = `${nameWithoutExt}-${uniqueSuffix}${ext}`;
-      const filePath = path.join(uploadPath, filename);
-      await fs.writeFile(filePath, req.file.buffer);
-      res.json({
-        success: true,
-        url: `/${folder}/${filename}`,
-        filename: filename,
-        originalName: req.file.originalname,
-        size: req.file.size
+    const payload = await uploadWithCloudinaryPolicy(req.file, folder);
+    return res.json(payload);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        details: error.details,
       });
     }
-  } catch (error) {
     console.error('Error uploading newsletter banner:', error);
     res.status(500).json({ error: 'Failed to upload banner image' });
   }
 });
 
-// Health check
+// Health check (includes whether Cloudinary env is present — safe for monitoring)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    cloudinaryConfigured: isCloudinaryConfigured(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Gallery API server running on http://localhost:${PORT}`);
+  if (isCloudinaryConfigured()) {
+    console.log(`☁️ Cloudinary: configured (cloud_name=${process.env.CLOUDINARY_CLOUD_NAME})`);
+  } else {
+    console.warn(
+      '⚠️ Cloudinary: NOT configured (missing CLOUDINARY_CLOUD_NAME / API_KEY / API_SECRET). ' +
+        (isProduction
+          ? 'Production uploads will fail until these are set on the host (e.g. Railway).'
+          : 'Uploads will use local public/ folder only.')
+    );
+  }
   console.log(`📁 Gallery data: ${GALLERY_DATA_PATH}`);
   console.log(`📁 Speakers data: ${SPEAKERS_DATA_PATH}`);
   console.log(`📁 Sponsors data: ${SPONSORS_DATA_PATH}`);
