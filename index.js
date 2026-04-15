@@ -9,6 +9,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';
 import mongoose from 'mongoose';
 import Newsletter from './models/Newsletter.js';
+import SiteData from './models/SiteData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -247,49 +248,106 @@ const SPONSORS_DATA_PATH = path.join(__dirname, '../public/sponsors-data.json');
 
 // Helper: Read gallery data
 async function readGalleryData() {
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const doc = await SiteData.findOne({ key: 'gallery' }).lean();
+      if (doc?.payload && typeof doc.payload === 'object') {
+        return doc.payload;
+      }
+    } catch (error) {
+      console.error('Error reading gallery data from MongoDB:', error);
+    }
+  }
+
   try {
     const data = await fs.readFile(GALLERY_DATA_PATH, 'utf8');
     return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, return default structure
+  } catch {
     return { years: [] };
   }
 }
 
 // Helper: Write gallery data
 async function writeGalleryData(data) {
+  if (mongoose.connection.readyState === 1) {
+    await SiteData.findOneAndUpdate(
+      { key: 'gallery' },
+      { key: 'gallery', payload: data },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return;
+  }
+  await fs.mkdir(path.dirname(GALLERY_DATA_PATH), { recursive: true });
   await fs.writeFile(GALLERY_DATA_PATH, JSON.stringify(data, null, 2), 'utf8');
 }
 
 // Helper: Read speakers data
 async function readSpeakersData() {
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const doc = await SiteData.findOne({ key: 'speakers' }).lean();
+      if (doc?.payload && typeof doc.payload === 'object') {
+        return doc.payload;
+      }
+    } catch (error) {
+      console.error('Error reading speakers data from MongoDB:', error);
+    }
+  }
+
   try {
     const data = await fs.readFile(SPEAKERS_DATA_PATH, 'utf8');
     return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, return default structure
+  } catch {
     return { groups: [] };
   }
 }
 
 // Helper: Write speakers data
 async function writeSpeakersData(data) {
+  if (mongoose.connection.readyState === 1) {
+    await SiteData.findOneAndUpdate(
+      { key: 'speakers' },
+      { key: 'speakers', payload: data },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return;
+  }
+  await fs.mkdir(path.dirname(SPEAKERS_DATA_PATH), { recursive: true });
   await fs.writeFile(SPEAKERS_DATA_PATH, JSON.stringify(data, null, 2), 'utf8');
 }
 
 // Helper: Read sponsors data
 async function readSponsorsData() {
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const doc = await SiteData.findOne({ key: 'sponsors' }).lean();
+      if (doc?.payload && typeof doc.payload === 'object') {
+        return doc.payload;
+      }
+    } catch (error) {
+      console.error('Error reading sponsors data from MongoDB:', error);
+    }
+  }
+
   try {
     const data = await fs.readFile(SPONSORS_DATA_PATH, 'utf8');
     return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, return default structure
+  } catch {
     return { sponsors: [] };
   }
 }
 
 // Helper: Write sponsors data
 async function writeSponsorsData(data) {
+  if (mongoose.connection.readyState === 1) {
+    await SiteData.findOneAndUpdate(
+      { key: 'sponsors' },
+      { key: 'sponsors', payload: data },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return;
+  }
+  await fs.mkdir(path.dirname(SPONSORS_DATA_PATH), { recursive: true });
   await fs.writeFile(SPONSORS_DATA_PATH, JSON.stringify(data, null, 2), 'utf8');
 }
 
