@@ -166,6 +166,15 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
+// Compatibility fallback:
+// Some production clients still request legacy gallery files from the backend host.
+// If the file is not present on Railway disk, redirect to the marketing host where
+// legacy static gallery assets are deployed.
+app.get(/^\/gallery\/.+\.(jpg|jpeg|png|gif|webp|svg|avif|bmp)$/i, (req, res, next) => {
+  if (!isProduction) return next();
+  return res.redirect(302, `https://www.ettechx.com${req.path}`);
+});
+
 // Configure multer for gallery file uploads
 const galleryStorage = multer.diskStorage({
   destination: async (req, file, cb) => {
